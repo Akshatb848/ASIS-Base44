@@ -57,7 +57,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 2. SSH into GCP VM and redeploy (native SSH — avoids key-parse bugs) ──
+  # ── 2. SSH into GCP VM and redeploy ──────────────────────────────────────
   deploy:
     name: Deploy to GCP VM
     runs-on: ubuntu-latest
@@ -65,30 +65,31 @@ jobs:
     environment: production
 
     steps:
-      - name: Setup SSH key
+      # webfactory/ssh-agent correctly handles OpenSSH key newlines
+      - name: Load SSH key into agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
+
+      - name: Add VM to known hosts
         run: |
           mkdir -p ~/.ssh
-          # Write key and fix any missing newlines (common secret copy-paste issue)
-          printf '%s' "${{ secrets.GCP_SSH_PRIVATE_KEY }}" > ~/.ssh/gcp_deploy_key
-          # Ensure the key ends with a newline
-          echo "" >> ~/.ssh/gcp_deploy_key
-          chmod 600 ~/.ssh/gcp_deploy_key
-          # Add host to known_hosts to skip interactive prompt
-          ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Deploy via SSH
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
+          VM_USER: ${{ secrets.GCP_VM_USER }}
+          VM_HOST: ${{ secrets.GCP_VM_HOST }}
         run: |
-          ssh -i ~/.ssh/gcp_deploy_key \
-            -o StrictHostKeyChecking=no \
+          ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=30 \
-            "${{ secrets.GCP_VM_USER }}@${{ secrets.GCP_VM_HOST }}" \
+            "${VM_USER}@${VM_HOST}" \
             "IMAGE='${IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' bash -s" << 'ENDSSH'
-
           set -e
+
           echo "=== Logging in to GHCR ==="
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
