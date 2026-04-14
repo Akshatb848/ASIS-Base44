@@ -1,4 +1,4 @@
-name: Build & Deploy to GCP VM # v4
+name: Build & Deploy to GCP VM # v5
 
 on:
   push:
@@ -8,33 +8,24 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Validate build on the runner (fast feedback, no push needed) ───────────
-  validate:
-    name: Validate Build
+  build-and-deploy:
+    name: Build image & deploy via SCP
     runs-on: ubuntu-latest
+    environment: production
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      # Build the Docker image on the runner (reliable internet here)
+      - name: Build Docker image
+        run: docker build -t asis-v5:latest .
 
-      - name: Install & build
-        run: |
-          npm ci
-          npm run build
+      # Export image to a gzipped tar (~25 MB)
+      - name: Export image as tar
+        run: docker save asis-v5:latest | gzip > /tmp/asis-v5.tar.gz
 
-  # ── SSH into VM → git pull → docker build locally → restart container ──────
-  deploy:
-    name: Deploy to GCP VM
-    runs-on: ubuntu-latest
-    needs: validate
-    environment: production
-
-    steps:
+      # Setup SSH key (base64-decoded — no newline issues)
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -42,28 +33,32 @@ jobs:
           chmod 600 ~/.ssh/gcp_key
           ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Deploy on VM (git pull + local docker build)
+      # Copy image tar to VM over SSH (no Docker Hub needed on VM)
+      - name: SCP image to VM
         env:
           VM_USER: ${{ secrets.GCP_VM_USER }}
           VM_HOST: ${{ secrets.GCP_VM_HOST }}
-          BRANCH: ${{ github.ref_name }}
+        run: |
+          scp -i ~/.ssh/gcp_key \
+            -o StrictHostKeyChecking=no \
+            /tmp/asis-v5.tar.gz \
+            "${VM_USER}@${VM_HOST}:/tmp/asis-v5.tar.gz"
+
+      # Load image and restart container on VM
+      - name: Load image and restart container
+        env:
+          VM_USER: ${{ secrets.GCP_VM_USER }}
+          VM_HOST: ${{ secrets.GCP_VM_HOST }}
         run: |
           ssh -i ~/.ssh/gcp_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=30 \
-            "${VM_USER}@${VM_HOST}" \
-            "BRANCH='${BRANCH}' bash -s" << 'ENDSSH'
+            "${VM_USER}@${VM_HOST}" << 'ENDSSH'
           set -e
-          APP_DIR="/opt/asis-v5"
 
-          echo "=== Updating code ==="
-          cd "$APP_DIR"
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          git pull origin "$BRANCH"
-
-          echo "=== Building Docker image locally ==="
-          docker build -t asis-v5:latest .
+          echo "=== Loading image ==="
+          docker load < /tmp/asis-v5.tar.gz
+          rm -f /tmp/asis-v5.tar.gz
 
           echo "=== Restarting container ==="
           docker stop asis-v5 2>/dev/null || true
@@ -74,7 +69,7 @@ jobs:
             -p 80:80 \
             asis-v5:latest
 
-          echo "=== Cleaning up dangling images ==="
+          echo "=== Pruning old images ==="
           docker image prune -f
 
           echo "=== Deploy complete ==="
