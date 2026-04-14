@@ -1,0 +1,17 @@
+{
+  "env": {
+    "CLAUDE_CODE_TIMEOUT": "120000",
+    "CLAUDE_CODE_MAX_TOKENS": "8096",
+    "ANTHROPIC_TIMEOUT": "300000",
+    "ANTHROPIC_API_TIMEOUT": "300000",
+    "CLAUDE_CODE_STREAM_TIMEOUT": "300000"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Edit(*)",
+      "Write(*)"
+    ],
+    "defaultMode": "acceptEdits"
+  }
+}
