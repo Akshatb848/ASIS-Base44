@@ -65,15 +65,12 @@ jobs:
     environment: production
 
     steps:
-      # webfactory/ssh-agent correctly handles OpenSSH key newlines
-      - name: Load SSH key into agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
-
-      - name: Add VM to known hosts
+      # Base64-decode the key — avoids all newline/libcrypto issues with multiline secrets
+      - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
+          echo "${{ secrets.GCP_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/gcp_key
+          chmod 600 ~/.ssh/gcp_key
           ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Deploy via SSH
@@ -84,7 +81,8 @@ jobs:
           VM_USER: ${{ secrets.GCP_VM_USER }}
           VM_HOST: ${{ secrets.GCP_VM_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=no \
+          ssh -i ~/.ssh/gcp_key \
+            -o StrictHostKeyChecking=no \
             -o ConnectTimeout=30 \
             "${VM_USER}@${VM_HOST}" \
             "IMAGE='${IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' bash -s" << 'ENDSSH'
