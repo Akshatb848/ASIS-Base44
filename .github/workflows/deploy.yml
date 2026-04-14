@@ -1,4 +1,4 @@
-name: Build & Deploy to GCP VM # v5
+name: Build & Deploy to GCP VM # v6
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-and-deploy:
-    name: Build image & deploy via SCP
+    name: Build & Deploy
     runs-on: ubuntu-latest
     environment: production
 
@@ -17,15 +17,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Build the Docker image on the runner (reliable internet here)
-      - name: Build Docker image
-        run: docker build -t asis-v5:latest .
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
-      # Export image to a gzipped tar (~25 MB)
-      - name: Export image as tar
-        run: docker save asis-v5:latest | gzip > /tmp/asis-v5.tar.gz
+      - name: Install & build
+        run: |
+          npm ci
+          npm run build
 
-      # Setup SSH key (base64-decoded — no newline issues)
+      # Archive the built dist/ folder
+      - name: Package dist
+        run: tar -czf dist.tar.gz dist/
+
+      # Setup SSH key (base64-decoded)
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -33,19 +40,19 @@ jobs:
           chmod 600 ~/.ssh/gcp_key
           ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts
 
-      # Copy image tar to VM over SSH (no Docker Hub needed on VM)
-      - name: SCP image to VM
+      # Copy built files to VM
+      - name: SCP dist to VM
         env:
           VM_USER: ${{ secrets.GCP_VM_USER }}
           VM_HOST: ${{ secrets.GCP_VM_HOST }}
         run: |
           scp -i ~/.ssh/gcp_key \
             -o StrictHostKeyChecking=no \
-            /tmp/asis-v5.tar.gz \
-            "${VM_USER}@${VM_HOST}:/tmp/asis-v5.tar.gz"
+            dist.tar.gz \
+            "${VM_USER}@${VM_HOST}:/tmp/asis-dist.tar.gz"
 
-      # Load image and restart container on VM
-      - name: Load image and restart container
+      # Install nginx (if needed) and deploy static files
+      - name: Deploy on VM
         env:
           VM_USER: ${{ secrets.GCP_VM_USER }}
           VM_HOST: ${{ secrets.GCP_VM_HOST }}
@@ -56,22 +63,42 @@ jobs:
             "${VM_USER}@${VM_HOST}" << 'ENDSSH'
           set -e
 
-          echo "=== Loading image ==="
-          docker load < /tmp/asis-v5.tar.gz
-          rm -f /tmp/asis-v5.tar.gz
+          echo "=== Installing nginx ==="
+          # Wait for any apt lock to clear
+          for i in 1 2 3 4 5; do
+            sudo apt-get install -y nginx && break || sleep 10
+          done
 
-          echo "=== Restarting container ==="
-          docker stop asis-v5 2>/dev/null || true
-          docker rm   asis-v5 2>/dev/null || true
-          docker run -d \
-            --name asis-v5 \
-            --restart unless-stopped \
-            -p 80:80 \
-            asis-v5:latest
+          echo "=== Deploying static files ==="
+          sudo mkdir -p /var/www/asis-v5
+          sudo tar -xzf /tmp/asis-dist.tar.gz -C /tmp/
+          sudo rsync -a --delete /tmp/dist/ /var/www/asis-v5/
+          rm -f /tmp/asis-dist.tar.gz
 
-          echo "=== Pruning old images ==="
-          docker image prune -f
+          echo "=== Writing nginx config ==="
+          sudo tee /etc/nginx/sites-available/asis-v5 > /dev/null << 'NGINX'
+          server {
+              listen 80 default_server;
+              root /var/www/asis-v5;
+              index index.html;
+              gzip on;
+              gzip_types text/plain text/css application/json application/javascript text/javascript;
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+              location ~* \.(js|css|png|ico|svg|woff2?)$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+          }
+          NGINX
+
+          sudo ln -sf /etc/nginx/sites-available/asis-v5 /etc/nginx/sites-enabled/asis-v5
+          sudo rm -f /etc/nginx/sites-enabled/default
+          sudo nginx -t
+          sudo systemctl enable nginx
+          sudo systemctl reload nginx
 
           echo "=== Deploy complete ==="
-          docker ps --filter name=asis-v5 --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          curl -s -o /dev/null -w "HTTP status: %{http_code}\n" http://localhost
           ENDSSH
