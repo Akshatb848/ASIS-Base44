@@ -1,4 +1,4 @@
-name: Build & Deploy to GCP VM # v2
+name: Build & Deploy to GCP VM # v3
 
 on:
   push:
@@ -57,7 +57,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 2. SSH into GCP VM and redeploy ──────────────────────────────────────
+  # ── 2. SSH into GCP VM and redeploy (native SSH — avoids key-parse bugs) ──
   deploy:
     name: Deploy to GCP VM
     runs-on: ubuntu-latest
@@ -65,38 +65,50 @@ jobs:
     environment: production
 
     steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          # Write key and fix any missing newlines (common secret copy-paste issue)
+          printf '%s' "${{ secrets.GCP_SSH_PRIVATE_KEY }}" > ~/.ssh/gcp_deploy_key
+          # Ensure the key ends with a newline
+          echo "" >> ~/.ssh/gcp_deploy_key
+          chmod 600 ~/.ssh/gcp_deploy_key
+          # Add host to known_hosts to skip interactive prompt
+          ssh-keyscan -H "${{ secrets.GCP_VM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.GCP_VM_HOST }}
-          username: ${{ secrets.GCP_VM_USER }}
-          key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            set -e
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          ssh -i ~/.ssh/gcp_deploy_key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "${{ secrets.GCP_VM_USER }}@${{ secrets.GCP_VM_HOST }}" \
+            "IMAGE='${IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' bash -s" << 'ENDSSH'
 
-            IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          set -e
+          echo "=== Logging in to GHCR ==="
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-            echo "=== Logging in to GHCR ==="
-            echo "${{ secrets.GITHUB_TOKEN }}" | \
-              docker login ghcr.io -u ${{ github.actor }} --password-stdin || true
+          echo "=== Pulling latest image ==="
+          docker pull "$IMAGE"
 
-            echo "=== Pulling latest image ==="
-            docker pull "$IMAGE"
+          echo "=== Stopping old container ==="
+          docker stop asis-v5 2>/dev/null || true
+          docker rm   asis-v5 2>/dev/null || true
 
-            echo "=== Stopping old container ==="
-            docker stop asis-v5 2>/dev/null || true
-            docker rm   asis-v5 2>/dev/null || true
+          echo "=== Starting new container ==="
+          docker run -d \
+            --name asis-v5 \
+            --restart unless-stopped \
+            -p 80:80 \
+            "$IMAGE"
 
-            echo "=== Starting new container ==="
-            docker run -d \
-              --name asis-v5 \
-              --restart unless-stopped \
-              -p 80:80 \
-              "$IMAGE"
+          echo "=== Cleaning up old images ==="
+          docker image prune -f
 
-            echo "=== Cleaning up old images ==="
-            docker image prune -f
-
-            echo "=== Deploy complete ==="
-            docker ps --filter name=asis-v5 --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          echo "=== Deploy complete ==="
+          docker ps --filter name=asis-v5 --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          ENDSSH
