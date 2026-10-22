@@ -65,7 +65,9 @@ export async function runFullAnalysis({ company, industry, question, analysisTyp
     sections,
     recommendations,
     risks,
-    agentWorkflow,
+    // The run has finished, so show every workflow step as completed
+    // (generateAgentWorkflow returns 'pending' steps for the pre-run preview).
+    agentWorkflow: agentWorkflow.map(a => ({ ...a, status: 'completed' })),
     strategicImplications: buildStrategicImplications(company, questionType),
     user_id: userId || 'demo_user',
     created_at: new Date().toISOString(),
