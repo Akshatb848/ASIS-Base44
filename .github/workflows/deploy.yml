@@ -1,10 +1,8 @@
 name: Build & Deploy to GCP VM # v7
 
+# Manual only: this deploys to the owner's personal GCP VM (needs repo secrets)
+# and frees port 3000 there, so it should never run implicitly on push.
 on:
-  push:
-    branches:
-      - claude/replicate-asis-v5-h5mWO
-      - main
   workflow_dispatch:
 
 jobs:
@@ -85,35 +83,35 @@ jobs:
 
           echo "=== Writing nginx config for port 3000 ==="
           sudo tee /etc/nginx/sites-available/asis-v5 > /dev/null << 'NGINX'
-server {
-    listen 3000;
-    server_name _;
-    root /var/www/asis-v5;
-    index index.html;
+          server {
+              listen 3000;
+              server_name _;
+              root /var/www/asis-v5;
+              index index.html;
 
-    gzip on;
-    gzip_vary on;
-    gzip_proxied any;
-    gzip_comp_level 6;
-    gzip_types text/plain text/css application/json application/javascript text/javascript application/x-javascript image/svg+xml font/woff2;
+              gzip on;
+              gzip_vary on;
+              gzip_proxied any;
+              gzip_comp_level 6;
+              gzip_types text/plain text/css application/json application/javascript text/javascript application/x-javascript image/svg+xml font/woff2;
 
-    # SPA fallback — all routes serve index.html
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
+              # SPA fallback — all routes serve index.html
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
 
-    # Long-term cache for hashed static assets
-    location ~* \.(js|css|woff2?|ttf|eot|png|ico|svg|jpg|jpeg|gif|webp)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-        access_log off;
-    }
+              # Long-term cache for hashed static assets
+              location ~* \.(js|css|woff2?|ttf|eot|png|ico|svg|jpg|jpeg|gif|webp)$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+                  access_log off;
+              }
 
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-Content-Type-Options "nosniff";
-    add_header Referrer-Policy "strict-origin-when-cross-origin";
-}
-NGINX
+              add_header X-Frame-Options "SAMEORIGIN";
+              add_header X-Content-Type-Options "nosniff";
+              add_header Referrer-Policy "strict-origin-when-cross-origin";
+          }
+          NGINX
 
           sudo ln -sf /etc/nginx/sites-available/asis-v5 /etc/nginx/sites-enabled/asis-v5
           # Remove default site to avoid conflict

@@ -87,7 +87,7 @@ npm test        # Vitest: classifier, framework selection, heuristic score, temp
 npm run build
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all three on every push and pull request. The older `deploy.yml` workflow deploys to a personal GCP VM and needs secrets that only exist in the owner's repo settings.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all three on every push and pull request. The older `deploy.yml` workflow deploys to a personal GCP VM, needs secrets that only exist in the owner's repo settings, and is now manual-only (`workflow_dispatch`).
 
 ## Project structure
 
